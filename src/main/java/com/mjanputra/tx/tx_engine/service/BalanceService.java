@@ -1,14 +1,21 @@
 package com.mjanputra.tx.tx_engine.service;
+import java.util.List;
 
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
+
 
 @Service
 public class BalanceService {
     private final StringRedisTemplate redis;
+    // inject the Lua script bean
+    private final DefaultRedisScript<Long> atomicDebitScript;
+
     
-    public BalanceService(StringRedisTemplate redis) {
+    public BalanceService(StringRedisTemplate redis, DefaultRedisScript<Long> atomicDebitScript) {
         this.redis = redis;
+        this.atomicDebitScript = atomicDebitScript;
     }
 
     private String key(String accountId) {
@@ -25,15 +32,20 @@ public class BalanceService {
         return amount;
     }
 
-    // Not atomic yet, Lua will fix this
+    // use Lua script to perform atomic debit operation
     public long debit(String accountId, long amount) {
-        long current = getBalance(accountId);
-        
-        if (current < amount) {
-            throw new IllegalArgumentException("Insufficient balance");
+        String balanceKey = key(accountId);
+        Long result = redis.execute(atomicDebitScript, 
+                List.of(balanceKey),
+                Long.toString(amount)
+        );
+
+        if (result == null) {
+            throw new IllegalStateException("Failed to execute debit operation");
         }
-        long next = current - amount;
-        redis.opsForValue().set(key(accountId), Long.toString(next));
-        return next;
+        if (result == -1L) {
+            throw new IllegalArgumentException("Insufficient balance for account: " + accountId);
+        }   
+        return result;
     }
 }
